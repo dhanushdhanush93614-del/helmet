@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Smart Helmet Dashboard</title>
+
+  <!-- MQTT -->
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial;
+      background: #0f172a;
+      color: white;
+      text-align: center;
+    }
+
+    h1 {
+      margin-top: 20px;
+    }
+
+    .grid {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .card {
+      background: #1e293b;
+      margin: 10px;
+      padding: 20px;
+      border-radius: 12px;
+      width: 200px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+
+    .value {
+      font-size: 22px;
+      font-weight: bold;
+      margin-top: 10px;
+    }
+
+    .alertBox {
+      margin-top: 20px;
+      font-size: 24px;
+      font-weight: bold;
+      padding: 10px;
+      border-radius: 10px;
+    }
+
+    .normal {
+      background: green;
+    }
+
+    .danger {
+      background: red;
+      animation: blink 1s infinite;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0.4; }
+    }
+
+    iframe {
+      margin-top: 20px;
+      border-radius: 10px;
+    }
+  </style>
+</head>
+
+<body>
+
+<h1>🚨 Smart Safety Helmet Dashboard</h1>
+
+<div class="grid">
+  <div class="card">Temperature<div id="temp" class="value">--</div></div>
+  <div class="card">Alcohol<div id="alcohol" class="value">--</div></div>
+  <div class="card">Flame<div id="flame" class="value">--</div></div>
+  <div class="card">Tilt<div id="tilt" class="value">--</div></div>
+  <div class="card">Acceleration<div id="accel" class="value">--</div></div>
+  <div class="card">GPS<div id="gps" class="value">--</div></div>
+</div>
+
+<div id="alertBox" class="alertBox normal">No Alerts</div>
+
+<!-- Map -->
+<iframe id="map"
+  width="90%"
+  height="300"
+  src="https://maps.google.com/maps?q=13.055146,80.226799&z=15&output=embed">
+</iframe>
+
+<!-- Alarm Sound -->
+<audio id="alarmSound">
+  <source src="https://www.soundjay.com/button/beep-07.wav">
+</audio>
+
+<script>
+const client = mqtt.connect("wss://u660b616.ala.eu-central-1.emqxsl.com:8084/mqtt", {
+  username: "helmet123",
+  password: "helmet123",
+  reconnectPeriod: 2000
+});
+
+client.on("connect", () => {
+  console.log("✅ Connected to MQTT");
+  client.subscribe("hel/live");
+});
+
+client.on("message", (topic, message) => {
+  try {
+    const data = JSON.parse(message.toString());
+
+    // Update values
+    document.getElementById("temp").innerText = data.temperature + " °C";
+    document.getElementById("alcohol").innerText = data.alcohol;
+    document.getElementById("flame").innerText = data.flame;
+    document.getElementById("tilt").innerText = data.tilt.toFixed(2);
+    document.getElementById("accel").innerText = data.accel.toFixed(2);
+
+    // GPS
+    document.getElementById("gps").innerHTML =
+      `<a href="https://maps.google.com/?q=${data.lat},${data.lng}" target="_blank" style="color:cyan;">
+        View Location
+      </a>`;
+
+    // Update map
+    document.getElementById("map").src =
+      `https://maps.google.com/maps?q=${data.lat},${data.lng}&z=15&output=embed`;
+
+    // Alert handling
+    let alertBox = document.getElementById("alertBox");
+
+    if (data.alert !== "none") {
+      alertBox.innerText = "⚠ ALERT: " + data.alert.toUpperCase();
+      alertBox.className = "alertBox danger";
+
+      // Play alarm
+      document.getElementById("alarmSound").play();
+    } else {
+      alertBox.innerText = "✅ System Normal";
+      alertBox.className = "alertBox normal";
+    }
+
+  } catch (e) {
+    console.error("Error parsing message", e);
+  }
+});
+</script>
+
+</body>
+</html>

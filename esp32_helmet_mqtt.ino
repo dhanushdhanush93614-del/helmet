@@ -29,6 +29,15 @@ const char* TOPIC_COMMAND = "hel/cmd";
 #define DHT_PIN 32
 #define BUZZER 14
 
+// ---------------- SIM800L ----------------
+#define SIM800_TX 17
+#define SIM800_RX 16
+#define SIM800_BAUD 9600
+
+const char* EMERGENCY_NUMBER = "8072907854";
+const unsigned long CALL_DURATION = 20000;
+const unsigned long CALL_COOLDOWN = 30000;
+
 // ---------------- FAKE VALUES (STABLE) ----------------
 const int ALCOHOL_VALUE = 400;
 const float LAT = 13.055146;
@@ -45,6 +54,7 @@ MPU6050 mpu;
 DHT dht(DHT_PIN, DHT11);
 WiFiClientSecure secureClient;
 PubSubClient mqtt(secureClient);
+HardwareSerial sim800(2);
 
 // ---------------- VARIABLES ----------------
 unsigned long shakeStart = 0;
@@ -53,7 +63,18 @@ unsigned long lastLive = 0;
 unsigned long lastStatus = 0;
 unsigned long lastAlert = 0;
 unsigned long lastReconnect = 0;
+unsigned long lastCallTime = 0;
 float lastTemp = 0;
+
+// ---------------- FUNCTION DECLARATIONS ----------------
+void connectWiFi();
+void connectMQTT();
+void publishLive(float lat, float lng, int alcohol, int flame, float temp, float accel, float tilt, const char* alert);
+void sendAlert(const char* type, float lat, float lng, int alcohol, int flame, float temp, float accel, float tilt);
+void publishStatus(const char* state);
+void initSIM800();
+void makeEmergencyCall();
+void sendSIM800Command(const char* command, unsigned long waitMs);
 
 // ---------------- SETUP ----------------
 void setup() {
@@ -66,6 +87,7 @@ void setup() {
   mpu.initialize();
 
   dht.begin();
+  initSIM800();
 
   connectWiFi();
 
@@ -77,7 +99,6 @@ void setup() {
 
 // ---------------- LOOP ----------------
 void loop() {
-
   if (WiFi.status() != WL_CONNECTED) {
     connectWiFi();
   }
@@ -95,17 +116,20 @@ void loop() {
   int flame = analogRead(FLAME_PIN);
 
   float temp = dht.readTemperature();
-  if (!isnan(temp)) lastTemp = temp;
-  else temp = lastTemp;
+  if (!isnan(temp)) {
+    lastTemp = temp;
+  } else {
+    temp = lastTemp;
+  }
 
   int16_t ax, ay, az;
   mpu.getAcceleration(&ax, &ay, &az);
 
-  float accel = sqrt(ax*ax + ay*ay + az*az) / 16384.0;
+  float accel = sqrt(ax * ax + ay * ay + az * az) / 16384.0;
 
-  float pitch = atan2(ay, sqrt(ax*ax + az*az)) * 57.2958;
-  float roll  = atan2(-ax, az) * 57.2958;
-  float tilt  = max(abs(pitch), abs(roll));
+  float pitch = atan2(ay, sqrt(ax * ax + az * az)) * 57.2958;
+  float roll = atan2(-ax, az) * 57.2958;
+  float tilt = max(abs(pitch), abs(roll));
 
   // -------- DEBUG --------
   Serial.println("\n===== LIVE DATA =====");
@@ -114,13 +138,15 @@ void loop() {
   Serial.println("Alcohol: " + String(alcohol));
   Serial.println("Flame: " + String(flame));
   Serial.println("Temp: " + String(temp));
-  Serial.println("GPS: " + String(lat,6) + "," + String(lng,6));
+  Serial.println("GPS: " + String(lat, 6) + "," + String(lng, 6));
 
   const char* alert = "none";
 
   // -------- ACCIDENT --------
   if (tilt >= SHAKE_THRESHOLD) {
-    if (shakeStart == 0) shakeStart = millis();
+    if (shakeStart == 0) {
+      shakeStart = millis();
+    }
 
     if (millis() - shakeStart >= SHAKE_TIME && !accidentSent) {
       Serial.println("ACCIDENT DETECTED");
@@ -175,7 +201,9 @@ void connectWiFi() {
 
 // ---------------- MQTT ----------------
 void connectMQTT() {
-  if (millis() - lastReconnect < 2000) return;
+  if (millis() - lastReconnect < 2000) {
+    return;
+  }
 
   lastReconnect = millis();
 
@@ -190,7 +218,6 @@ void connectMQTT() {
 
 // ---------------- LIVE ----------------
 void publishLive(float lat, float lng, int alcohol, int flame, float temp, float accel, float tilt, const char* alert) {
-
   StaticJsonDocument<256> doc;
   char payload[256];
 
@@ -209,7 +236,6 @@ void publishLive(float lat, float lng, int alcohol, int flame, float temp, float
 
 // ---------------- ALERT ----------------
 void sendAlert(const char* type, float lat, float lng, int alcohol, int flame, float temp, float accel, float tilt) {
-
   Serial.println("ALERT: " + String(type));
   digitalWrite(BUZZER, HIGH);
 
@@ -224,6 +250,8 @@ void sendAlert(const char* type, float lat, float lng, int alcohol, int flame, f
   serializeJson(doc, payload);
   mqtt.publish(TOPIC_ALERTS, payload, true);
 
+  makeEmergencyCall();
+
   delay(3000);
   digitalWrite(BUZZER, LOW);
 }
@@ -237,4 +265,53 @@ void publishStatus(const char* state) {
 
   serializeJson(doc, payload);
   mqtt.publish(TOPIC_STATUS, payload, true);
+}
+
+// ---------------- SIM800L ----------------
+void initSIM800() {
+  sim800.begin(SIM800_BAUD, SERIAL_8N1, SIM800_RX, SIM800_TX);
+  delay(1000);
+
+  sendSIM800Command("AT", 1000);
+  sendSIM800Command("ATE0", 1000);
+  sendSIM800Command("AT+CLVL=100", 1000);
+
+  Serial.println("SIM800L READY");
+}
+
+void makeEmergencyCall() {
+  if (millis() - lastCallTime < CALL_COOLDOWN) {
+    Serial.println("Call cooldown active");
+    return;
+  }
+
+  lastCallTime = millis();
+
+  Serial.println("CALLING: " + String(EMERGENCY_NUMBER));
+  sim800.print("ATD");
+  sim800.print(EMERGENCY_NUMBER);
+  sim800.println(";");
+
+  unsigned long startCall = millis();
+  while (millis() - startCall < CALL_DURATION) {
+    while (sim800.available()) {
+      Serial.write(sim800.read());
+    }
+    delay(10);
+  }
+
+  sendSIM800Command("ATH", 1000);
+  Serial.println("CALL ENDED");
+}
+
+void sendSIM800Command(const char* command, unsigned long waitMs) {
+  sim800.println(command);
+
+  unsigned long start = millis();
+  while (millis() - start < waitMs) {
+    while (sim800.available()) {
+      Serial.write(sim800.read());
+    }
+    delay(10);
+  }
 }
